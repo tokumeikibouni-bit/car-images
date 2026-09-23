@@ -1,0 +1,30 @@
+name: Instagram Auto Post
+
+on:
+  schedule:
+    # UTC 3:00 = 日本時間 12:00 に毎日チェックを実行
+    # (投稿するかどうかはスクリプト内の日付計算で判断されます)
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    # 手動でテスト実行したいときに「Run workflow」ボタンから実行できます
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Pythonをセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 必要なライブラリをインストール
+        run: pip install requests
+
+      - name: 投稿スクリプトを実行
+        env:
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+        run: python scripts/post_to_instagram.py
