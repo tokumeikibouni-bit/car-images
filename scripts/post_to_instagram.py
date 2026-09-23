@@ -12,24 +12,35 @@ Instagram Graph API経由で自動投稿する。
 【必要なGitHub Secrets】
 - IG_USER_ID      : InstagramのユーザーID (Meta for Developersで確認した数字)
 - IG_ACCESS_TOKEN : Instagram Graph APIのアクセストークン
+
+【必要なGitHub Variables または環境変数(このファイル内で直接設定)】
+- START_DATE      : 投稿を開始した基準日 (YYYY-MM-DD)
+- INTERVAL_DAYS    : 投稿間隔(日数) 例: 3
+- REPO_OWNER      : GitHubのユーザー名
+- REPO_NAME       : リポジトリ名 (例: car-images)
+- REPO_BRANCH     : ブランチ名 (通常 "main")
+- IMAGES_DIR      : リポジトリ内の画像フォルダ名 (例: "images")
 """
 
 import os
 import re
 import sys
 import time
+import base64
 import datetime
 import urllib.parse
 
 import requests
 
+ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"
+
 # ============ 設定項目 (ここを編集してください) ============
-START_DATE = "2026-09-23"      # 投稿を開始する基準日 (YYYY-MM-DD形式)
-INTERVAL_DAYS = 1              # 何日おきに投稿するか (2〜3日に1回なら 3 を推奨)
+START_DATE = "2026-09-20"      # 投稿を開始する基準日 (YYYY-MM-DD形式)
+INTERVAL_DAYS = 3              # 何日おきに投稿するか (2〜3日に1回なら 3 を推奨)
 REPO_OWNER = "tokumeikibouni-bit"   # GitHubのユーザー名
 REPO_NAME = "car-images"            # リポジトリ名
 REPO_BRANCH = "main"                 # ブランチ名
-IMAGES_DIR = "."                      # 画像が入っているフォルダ名 (ルート直下なので ".")
+IMAGES_DIR = "."                      # 画像が入っているフォルダ名 (リポジトリのルート直下の場合は ".")
 # =========================================================
 
 GRAPH_API_VERSION = "v21.0"
@@ -65,22 +76,99 @@ def list_image_files() -> list:
     return [f[1] for f in files]
 
 
+def describe_image_with_ai(image_path: str) -> str:
+    """
+    Anthropic APIを使い、画像の内容を見て日本語の一言説明文を生成する。
+    ANTHROPIC_API_KEYが未設定、またはAPI呼び出しに失敗した場合は
+    空文字を返す(その場合キャプションは説明文なしで投稿される)。
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("[情報] ANTHROPIC_API_KEY未設定のため、AI説明文はスキップします。")
+        return ""
+
+    try:
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        ext = image_path.lower().rsplit(".", 1)[-1]
+        media_type = "image/png" if ext == "png" else "image/jpeg"
+
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": ANTHROPIC_MODEL,
+                "max_tokens": 100,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": image_b64,
+                                },
+                            },
+                            {
+                                "type": "text",
+                                "text": (
+                                    "この写真に写っている車の様子やシーン(場所・時間帯・"
+                                    "構図など)を、Instagram投稿のキャプションに使う一言として"
+                                    "日本語で20〜30文字程度で簡潔に説明してください。"
+                                    "説明文だけを出力し、前置きや記号は不要です。"
+                                ),
+                            },
+                        ],
+                    }
+                ],
+            },
+            timeout=60,
+        )
+        data = response.json()
+        text = data["content"][0]["text"].strip()
+        print(f"[情報] AI生成の説明文: {text}")
+        return text
+    except Exception as e:
+        print(f"[警告] AI説明文の生成に失敗しました(スキップします): {e}")
+        return ""
+
+
 def build_caption(filename: str) -> str:
-    """ファイル名から「メーカー_車種_年式」を抜き出してキャプションを作る"""
-    base = filename.rsplit(".", 1)[0]
-    base = base.split(" (")[0]
+    """ファイル名から「メーカー_車種_年式」を抜き出し、AI生成の説明文と組み合わせてキャプションを作る"""
+    base = filename.rsplit(".", 1)[0]   # 拡張子を除去
+    base = base.split(" (")[0]           # " (1)" のような連番部分を除去
     parts = base.split("_")
 
     maker = parts[0] if len(parts) > 0 else ""
     model = parts[1] if len(parts) > 1 else ""
     year = parts[2] if len(parts) > 2 else ""
 
-    caption = f"{maker} {model}\n{year}年式\n\n#{maker} #{model} #旧車 #自動車 #車好き"
-    return caption
+    image_path = os.path.join(IMAGES_DIR, filename)
+    description = describe_image_with_ai(image_path)
+
+    lines = [f"{maker} {model}", f"{year}年式"]
+    if description:
+        lines.append("")
+        lines.append(description)
+    lines.append("")
+    lines.append(f"#{maker} #{model} #旧車 #自動車 #車好き")
+
+    return "\n".join(lines)
 
 
 def calc_today_index(total_images: int):
-    """今日が投稿日かどうか、投稿するなら何番目の画像かを計算する"""
+    """
+    今日が投稿日かどうか、投稿するなら何番目の画像かを計算する。
+    投稿日でなければ None を返す。
+    """
     start = datetime.date.fromisoformat(START_DATE)
     today = datetime.date.today()
     days_since_start = (today - start).days
@@ -94,7 +182,7 @@ def calc_today_index(total_images: int):
         return None
 
     cycle_position = (days_since_start // INTERVAL_DAYS) % total_images
-    return cycle_position
+    return cycle_position  # 0始まりのインデックス
 
 
 def build_image_url(filename: str) -> str:
@@ -146,7 +234,7 @@ def main():
     index = calc_today_index(len(image_files))
 
     if index is None:
-        return
+        return  # 投稿日ではないので終了
 
     filename = image_files[index]
     image_url = build_image_url(filename)
@@ -157,6 +245,7 @@ def main():
     print(f"[情報] キャプション:\n{caption}")
 
     creation_id = create_media_container(ig_user_id, access_token, image_url, caption)
+    # Instagram側での画像取得・処理に少し時間がかかることがあるため待機
     time.sleep(5)
     publish_media(ig_user_id, access_token, creation_id)
 
