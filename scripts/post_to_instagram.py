@@ -35,7 +35,7 @@ import requests
 ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"
 
 # ============ 設定項目 (ここを編集してください) ============
-START_DATE = "2026-09-26"      # 投稿を開始する基準日 (YYYY-MM-DD形式)
+START_DATE = "2026-09-25"      # 投稿を開始する基準日 (YYYY-MM-DD形式)
 INTERVAL_DAYS = 1              # 何日おきに投稿するか (2〜3日に1回なら 3 を推奨)
 REPO_OWNER = "tokumeikibouni-bit"   # GitHubのユーザー名
 REPO_NAME = "car-images"            # リポジトリ名
